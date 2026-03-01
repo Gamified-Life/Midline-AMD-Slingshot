@@ -1,0 +1,1160 @@
+import { useState, useEffect, useRef, useCallback } from "react";
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+async function callClaude(messages, systemPrompt, onStream) {
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 3000,
+      system: systemPrompt,
+      messages,
+      stream: !!onStream,
+    }),
+  });
+
+  if (onStream) {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let full = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value);
+      const lines = chunk.split("\n").filter((l) => l.startsWith("data:"));
+      for (const line of lines) {
+        try {
+          const json = JSON.parse(line.slice(5));
+          if (json.type === "content_block_delta" && json.delta?.text) {
+            full += json.delta.text;
+            onStream(full);
+          }
+        } catch {}
+      }
+    }
+    return full;
+  } else {
+    const data = await res.json();
+    return data.content?.[0]?.text || "";
+  }
+}
+
+async function callClaudeJSON(messages, systemPrompt) {
+  const text = await callClaude(messages, systemPrompt + "\n\nRespond ONLY with valid JSON, no markdown, no backticks.");
+  try {
+    const clean = text.replace(/```json|```/g, "").trim();
+    return JSON.parse(clean);
+  } catch {
+    return null;
+  }
+}
+
+// ── Constants ──────────────────────────────────────────────────────────────
+
+const STEPS = ["idea", "validation", "offer", "generating", "dashboard"];
+
+const STEP_LABELS = {
+  idea: "01 · IDEA",
+  validation: "02 · VALIDATE",
+  offer: "03 · OFFER",
+  generating: "04 · BUILD",
+  dashboard: "05 · LAUNCH",
+};
+
+// ── Main App ───────────────────────────────────────────────────────────────
+
+export default function App() {
+  const [step, setStep] = useState("idea");
+  const [idea, setIdea] = useState("");
+  const [validationData, setValidationData] = useState(null);
+  const [offerData, setOfferData] = useState(null);
+  const [result, setResult] = useState(null);
+  const [generateLog, setGenerateLog] = useState([]);
+
+  const goTo = (s) => setStep(s);
+
+  return (
+    <div style={styles.root}>
+      <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,600;1,300&family=JetBrains+Mono:wght@400;600&family=Syne:wght@400;700;800&display=swap" rel="stylesheet" />
+      <style>{globalCSS}</style>
+
+      {/* Header */}
+      <header style={styles.header}>
+        <div style={styles.logo}>
+          <span style={styles.logoMark}>⬡</span>
+          <span style={styles.logoText}>TAILWIND</span>
+          <span style={styles.logoSub}>AI</span>
+        </div>
+        <nav style={styles.nav}>
+          {STEPS.map((s) => (
+            <div
+              key={s}
+              style={{
+                ...styles.navStep,
+                ...(step === s ? styles.navStepActive : {}),
+                ...(STEPS.indexOf(s) > STEPS.indexOf(step) ? styles.navStepFuture : {}),
+              }}
+            >
+              {STEP_LABELS[s]}
+            </div>
+          ))}
+        </nav>
+      </header>
+
+      {/* Content */}
+      <main style={styles.main}>
+        {step === "idea" && (
+          <IdeaScreen idea={idea} setIdea={setIdea} onNext={() => goTo("validation")} />
+        )}
+        {step === "validation" && (
+          <ValidationScreen idea={idea} onNext={(d) => { setValidationData(d); goTo("offer"); }} />
+        )}
+        {step === "offer" && (
+          <OfferScreen idea={idea} validationData={validationData} onNext={(d) => { setOfferData(d); goTo("generating"); }} />
+        )}
+        {step === "generating" && (
+          <GeneratingScreen
+            idea={idea}
+            validationData={validationData}
+            offerData={offerData}
+            log={generateLog}
+            setLog={setGenerateLog}
+            onDone={(r) => { setResult(r); goTo("dashboard"); }}
+          />
+        )}
+        {step === "dashboard" && (
+          <Dashboard result={result} idea={idea} validationData={validationData} offerData={offerData} />
+        )}
+      </main>
+    </div>
+  );
+}
+
+// ── Screen 1: Idea ─────────────────────────────────────────────────────────
+
+function IdeaScreen({ idea, setIdea, onNext }) {
+  const [focused, setFocused] = useState(false);
+  const examples = [
+    "A subscription box for handmade artisan soaps",
+    "An AI tutor for competitive programming",
+    "A marketplace for freelance architects",
+    "A SaaS tool for restaurant inventory management",
+  ];
+
+  return (
+    <div style={styles.screen}>
+      <div style={styles.screenInner}>
+        <div style={styles.eyebrow}>YOUR BUSINESS IDEA</div>
+        <h1 style={styles.heroTitle}>
+          What are you<br />
+          <em style={styles.heroEm}>building?</em>
+        </h1>
+        <p style={styles.heroSub}>
+          Describe your idea in plain language. We'll validate it, craft your offer, build your landing page, and give you a complete launch kit — in minutes.
+        </p>
+
+        <div style={{ ...styles.inputWrap, ...(focused ? styles.inputWrapFocused : {}) }}>
+          <textarea
+            style={styles.textarea}
+            placeholder="e.g. A mobile app that connects local farmers with urban restaurants for direct produce sourcing…"
+            value={idea}
+            onChange={(e) => setIdea(e.target.value)}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            rows={4}
+          />
+          <div style={styles.inputBorder} />
+        </div>
+
+        <div style={styles.examples}>
+          <span style={styles.examplesLabel}>Try an example →</span>
+          {examples.map((ex) => (
+            <button key={ex} style={styles.chip} onClick={() => setIdea(ex)}>
+              {ex}
+            </button>
+          ))}
+        </div>
+
+        <button
+          style={{ ...styles.btn, ...(idea.trim().length < 10 ? styles.btnDisabled : {}) }}
+          disabled={idea.trim().length < 10}
+          onClick={onNext}
+        >
+          Validate My Idea <span style={styles.btnArrow}>→</span>
+        </button>
+      </div>
+
+      <div style={styles.decorGrid} aria-hidden>
+        {Array.from({ length: 48 }).map((_, i) => (
+          <div key={i} style={styles.decorDot} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Screen 2: Validation ───────────────────────────────────────────────────
+
+function ValidationScreen({ idea, onNext }) {
+  const [phase, setPhase] = useState("loading"); // loading | questions | scoring | done
+  const [questions, setQuestions] = useState([]);
+  const [answers, setAnswers] = useState({});
+  const [score, setScore] = useState(null);
+  const [analysis, setAnalysis] = useState(null);
+  const [streaming, setStreaming] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      const data = await callClaudeJSON(
+        [{ role: "user", content: `Business idea: "${idea}"` }],
+        `You are a startup validation expert. Generate 5 targeted validation questions for this business idea. Return JSON: { "questions": [ { "id": "q1", "question": "...", "placeholder": "..." } ] }`
+      );
+      setQuestions(data?.questions || []);
+      setPhase("questions");
+    })();
+  }, []);
+
+  const handleSubmit = async () => {
+    setPhase("scoring");
+    const qaText = questions.map((q) => `Q: ${q.question}\nA: ${answers[q.id] || "(no answer)"}`).join("\n\n");
+    const data = await callClaudeJSON(
+      [{ role: "user", content: `Business idea: "${idea}"\n\nValidation Q&A:\n${qaText}` }],
+      `You are a top startup analyst. Evaluate this business idea based on the validation answers. Return JSON:
+{
+  "score": <0-100 integer>,
+  "verdict": "<one sentence verdict>",
+  "strengths": ["<point>", "<point>", "<point>"],
+  "risks": ["<risk>", "<risk>", "<risk>"],
+  "marketSize": "<estimated TAM>",
+  "competition": "<competition level: Low/Medium/High>",
+  "uniqueness": "<what makes this unique>",
+  "recommendation": "<detailed 2-3 sentence recommendation>"
+}`
+    );
+    setScore(data?.score);
+    setAnalysis(data);
+    setPhase("done");
+  };
+
+  const allAnswered = questions.length > 0 && questions.every((q) => (answers[q.id] || "").trim().length > 3);
+
+  if (phase === "loading") return <LoadingPane label="Generating validation questions…" />;
+
+  if (phase === "scoring") return <LoadingPane label="Analyzing your idea…" />;
+
+  return (
+    <div style={styles.screen}>
+      <div style={styles.screenInner}>
+        {phase === "questions" && (
+          <>
+            <div style={styles.eyebrow}>IDEA VALIDATION</div>
+            <h2 style={styles.sectionTitle}>Let's stress-test your idea</h2>
+            <p style={styles.heroSub}>Answer these 5 questions honestly. The more specific you are, the better your results.</p>
+            <div style={styles.questionList}>
+              {questions.map((q, i) => (
+                <div key={q.id} style={styles.questionItem}>
+                  <label style={styles.questionLabel}>
+                    <span style={styles.questionNum}>{String(i + 1).padStart(2, "0")}</span>
+                    {q.question}
+                  </label>
+                  <textarea
+                    style={styles.answerBox}
+                    placeholder={q.placeholder}
+                    value={answers[q.id] || ""}
+                    onChange={(e) => setAnswers((a) => ({ ...a, [q.id]: e.target.value }))}
+                    rows={2}
+                  />
+                </div>
+              ))}
+            </div>
+            <button
+              style={{ ...styles.btn, ...(allAnswered ? {} : styles.btnDisabled) }}
+              disabled={!allAnswered}
+              onClick={handleSubmit}
+            >
+              Get My Validation Score <span style={styles.btnArrow}>→</span>
+            </button>
+          </>
+        )}
+
+        {phase === "done" && analysis && (
+          <>
+            <div style={styles.eyebrow}>VALIDATION COMPLETE</div>
+            <div style={styles.scoreWrap}>
+              <div style={styles.scoreCircle}>
+                <svg viewBox="0 0 120 120" style={styles.scoreSvg}>
+                  <circle cx="60" cy="60" r="50" fill="none" stroke="#1a1a2e" strokeWidth="8" />
+                  <circle
+                    cx="60" cy="60" r="50" fill="none"
+                    stroke={score >= 70 ? "#00e5a0" : score >= 50 ? "#f5a623" : "#ff4d4d"}
+                    strokeWidth="8"
+                    strokeDasharray={`${(score / 100) * 314} 314`}
+                    strokeLinecap="round"
+                    transform="rotate(-90 60 60)"
+                    style={{ transition: "stroke-dasharray 1s ease" }}
+                  />
+                </svg>
+                <div style={styles.scoreNum}>{score}</div>
+                <div style={styles.scoreLabel}>/ 100</div>
+              </div>
+              <div style={styles.scoreVerdict}>
+                <div style={{ ...styles.verdictBadge, background: score >= 70 ? "#00e5a020" : score >= 50 ? "#f5a62320" : "#ff4d4d20", color: score >= 70 ? "#00e5a0" : score >= 50 ? "#f5a623" : "#ff4d4d", borderColor: score >= 70 ? "#00e5a0" : score >= 50 ? "#f5a623" : "#ff4d4d" }}>
+                  {score >= 70 ? "✓ STRONG IDEA" : score >= 50 ? "⚠ NEEDS WORK" : "✗ HIGH RISK"}
+                </div>
+                <p style={styles.verdictText}>{analysis.verdict}</p>
+              </div>
+            </div>
+
+            <div style={styles.metricsRow}>
+              <Metric label="Market Size" value={analysis.marketSize} />
+              <Metric label="Competition" value={analysis.competition} />
+              <Metric label="Uniqueness" value={analysis.uniqueness} />
+            </div>
+
+            <div style={styles.twoCol}>
+              <div style={styles.colCard}>
+                <div style={styles.colCardTitle}>💪 Strengths</div>
+                {analysis.strengths?.map((s, i) => <div key={i} style={styles.listItem}><span style={styles.bullet}>✓</span>{s}</div>)}
+              </div>
+              <div style={{ ...styles.colCard, borderColor: "#ff4d4d30" }}>
+                <div style={styles.colCardTitle}>⚠ Risks</div>
+                {analysis.risks?.map((r, i) => <div key={i} style={styles.listItem}><span style={{ ...styles.bullet, color: "#ff4d4d" }}>!</span>{r}</div>)}
+              </div>
+            </div>
+
+            <div style={styles.recBox}>
+              <div style={styles.recLabel}>RECOMMENDATION</div>
+              <p style={styles.recText}>{analysis.recommendation}</p>
+            </div>
+
+            <button style={styles.btn} onClick={() => onNext(analysis)}>
+              Build My Offer <span style={styles.btnArrow}>→</span>
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Screen 3: Offer ────────────────────────────────────────────────────────
+
+function OfferScreen({ idea, validationData, onNext }) {
+  const [phase, setPhase] = useState("loading");
+  const [questions, setQuestions] = useState([]);
+  const [answers, setAnswers] = useState({});
+
+  useEffect(() => {
+    (async () => {
+      const data = await callClaudeJSON(
+        [{ role: "user", content: `Business idea: "${idea}"\nValidation score: ${validationData?.score}/100` }],
+        `You are an expert offer strategist (Alex Hormozi style). Generate 6 offer creation questions to craft an irresistible offer. Return JSON: { "questions": [ { "id": "q1", "question": "...", "placeholder": "...", "type": "text|select", "options": ["opt1","opt2"] } ] }`
+      );
+      setQuestions(data?.questions || []);
+      setPhase("questions");
+    })();
+  }, []);
+
+  const allAnswered = questions.length > 0 && questions.every((q) => (answers[q.id] || "").trim().length > 1);
+
+  if (phase === "loading") return <LoadingPane label="Crafting your offer questions…" />;
+
+  return (
+    <div style={styles.screen}>
+      <div style={styles.screenInner}>
+        <div style={styles.eyebrow}>OFFER CREATION</div>
+        <h2 style={styles.sectionTitle}>Design your irresistible offer</h2>
+        <p style={styles.heroSub}>This shapes your pricing, positioning, and messaging across everything we build for you.</p>
+
+        <div style={styles.questionList}>
+          {questions.map((q, i) => (
+            <div key={q.id} style={styles.questionItem}>
+              <label style={styles.questionLabel}>
+                <span style={styles.questionNum}>{String(i + 1).padStart(2, "0")}</span>
+                {q.question}
+              </label>
+              {q.type === "select" && q.options ? (
+                <div style={styles.optionGrid}>
+                  {q.options.map((opt) => (
+                    <button
+                      key={opt}
+                      style={{ ...styles.optionBtn, ...(answers[q.id] === opt ? styles.optionBtnSelected : {}) }}
+                      onClick={() => setAnswers((a) => ({ ...a, [q.id]: opt }))}
+                    >
+                      {opt}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <textarea
+                  style={styles.answerBox}
+                  placeholder={q.placeholder}
+                  value={answers[q.id] || ""}
+                  onChange={(e) => setAnswers((a) => ({ ...a, [q.id]: e.target.value }))}
+                  rows={2}
+                />
+              )}
+            </div>
+          ))}
+        </div>
+
+        <button
+          style={{ ...styles.btn, ...(allAnswered ? {} : styles.btnDisabled) }}
+          disabled={!allAnswered}
+          onClick={() => onNext({ questions, answers })}
+        >
+          Generate My Launch Kit <span style={styles.btnArrow}>→</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Screen 4: Generating ───────────────────────────────────────────────────
+
+function GeneratingScreen({ idea, validationData, offerData, log, setLog, onDone }) {
+  const started = useRef(false);
+
+  const addLog = (msg, done = false) =>
+    setLog((l) => {
+      const last = l[l.length - 1];
+      if (last && !last.done) return [...l.slice(0, -1), { msg, done }];
+      return [...l, { msg, done }];
+    });
+
+  useEffect(() => {
+    if (started.current) return;
+    started.current = true;
+    run();
+  }, []);
+
+  const run = async () => {
+    const qaText = offerData.questions
+      .map((q) => `${q.question}: ${offerData.answers[q.id] || "N/A"}`)
+      .join("\n");
+
+    const context = `Business idea: "${idea}"\nValidation score: ${validationData?.score}/100\nStrengths: ${validationData?.strengths?.join(", ")}\nOffer Q&A:\n${qaText}`;
+
+    // 1. Landing page
+    addLog("Generating landing page…");
+    const landingPage = await callClaude(
+      [{ role: "user", content: context }],
+      `You are an expert landing page designer. Create a complete, beautiful, conversion-optimized HTML landing page for this business. Include: hero section, problem/solution, features, social proof (fabricated examples), pricing, and CTA. Use inline CSS with a modern, premium design. Make it fully self-contained single HTML file. Return ONLY the complete HTML.`
+    );
+    addLog("✓ Landing page generated", true);
+
+    // 2. Game plan
+    addLog("Building business gameplan…");
+    const gameplan = await callClaudeJSON(
+      [{ role: "user", content: context }],
+      `You are a top startup strategist. Create a 90-day launch gameplan. Return JSON:
+{
+  "phases": [
+    { "phase": "Phase 1: Foundation (Days 1-30)", "goal": "...", "tasks": ["task1","task2","task3","task4","task5"], "kpis": ["kpi1","kpi2"] },
+    { "phase": "Phase 2: Traction (Days 31-60)", "goal": "...", "tasks": ["task1","task2","task3","task4","task5"], "kpis": ["kpi1","kpi2"] },
+    { "phase": "Phase 3: Scale (Days 61-90)", "goal": "...", "tasks": ["task1","task2","task3","task4","task5"], "kpis": ["kpi1","kpi2"] }
+  ],
+  "revenueTarget": "...",
+  "firstCustomerStrategy": "..."
+}`
+    );
+    addLog("✓ Gameplan created", true);
+
+    // 3. Legal framework
+    addLog("Preparing legal framework…");
+    const legal = await callClaudeJSON(
+      [{ role: "user", content: context }],
+      `You are a startup legal advisor. Create a legal framework checklist for this business. Return JSON:
+{
+  "businessStructure": { "recommended": "...", "reason": "..." },
+  "sections": [
+    { "title": "Business Registration", "items": ["item1","item2","item3"] },
+    { "title": "Intellectual Property", "items": ["item1","item2","item3"] },
+    { "title": "Contracts & Agreements", "items": ["item1","item2","item3"] },
+    { "title": "Compliance & Regulations", "items": ["item1","item2","item3"] },
+    { "title": "Privacy & Data", "items": ["item1","item2","item3"] },
+    { "title": "Tax Obligations", "items": ["item1","item2","item3"] }
+  ],
+  "urgentWarnings": ["warning1","warning2"]
+}`
+    );
+    addLog("✓ Legal framework ready", true);
+
+    // 4. Lead list + marketing
+    addLog("Curating lead list & marketing strategies…");
+    const marketing = await callClaudeJSON(
+      [{ role: "user", content: context }],
+      `You are a growth hacker and lead generation expert. Return JSON:
+{
+  "targetPersonas": [
+    { "name": "...", "role": "...", "pain": "...", "where": "..." },
+    { "name": "...", "role": "...", "pain": "...", "where": "..." },
+    { "name": "...", "role": "...", "pain": "...", "where": "..." }
+  ],
+  "leadSources": [
+    { "platform": "LinkedIn", "strategy": "...", "template": "..." },
+    { "platform": "Reddit", "strategy": "...", "template": "..." },
+    { "platform": "Cold Email", "strategy": "...", "template": "..." },
+    { "platform": "Product Hunt", "strategy": "...", "template": "..." }
+  ],
+  "marketingChannels": [
+    { "channel": "...", "tactic": "...", "expectedROI": "...", "effort": "Low|Medium|High", "timeToResult": "..." },
+    { "channel": "...", "tactic": "...", "expectedROI": "...", "effort": "Low|Medium|High", "timeToResult": "..." },
+    { "channel": "...", "tactic": "...", "expectedROI": "...", "effort": "Low|Medium|High", "timeToResult": "..." },
+    { "channel": "...", "tactic": "...", "expectedROI": "...", "effort": "Low|Medium|High", "timeToResult": "..." },
+    { "channel": "...", "tactic": "...", "expectedROI": "...", "effort": "Low|Medium|High", "timeToResult": "..." }
+  ],
+  "sampleLeads": [
+    { "company": "...", "contact": "...", "role": "...", "email": "...", "linkedIn": "linkedin.com/in/..." },
+    { "company": "...", "contact": "...", "role": "...", "email": "...", "linkedIn": "linkedin.com/in/..." },
+    { "company": "...", "contact": "...", "role": "...", "email": "...", "linkedIn": "linkedin.com/in/..." },
+    { "company": "...", "contact": "...", "role": "...", "email": "...", "linkedIn": "linkedin.com/in/..." },
+    { "company": "...", "contact": "...", "role": "...", "email": "...", "linkedIn": "linkedin.com/in/..." }
+  ]
+}`
+    );
+    addLog("✓ Lead list & marketing strategies ready", true);
+
+    addLog("🚀 Your launch kit is ready!", true);
+    onDone({ landingPage, gameplan, legal, marketing });
+  };
+
+  return (
+    <div style={styles.screen}>
+      <div style={{ ...styles.screenInner, maxWidth: 600, textAlign: "center" }}>
+        <div style={styles.eyebrow}>BUILDING YOUR LAUNCH KIT</div>
+        <h2 style={styles.sectionTitle}>Building your business…</h2>
+        <p style={styles.heroSub}>Our AI is crafting every piece of your launch kit. This takes about 60 seconds.</p>
+        <div style={styles.logBox}>
+          {log.map((l, i) => (
+            <div key={i} style={{ ...styles.logLine, ...(l.done ? styles.logLineDone : styles.logLinePending) }}>
+              <span style={styles.logDot}>{l.done ? "✓" : "◌"}</span>
+              {l.msg}
+            </div>
+          ))}
+          {log.length === 0 && <div style={styles.logLine}>Initializing…</div>}
+        </div>
+        <div style={styles.progressBar}>
+          <div
+            style={{
+              ...styles.progressFill,
+              width: `${(log.filter((l) => l.done).length / 5) * 100}%`,
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Screen 5: Dashboard ────────────────────────────────────────────────────
+
+function Dashboard({ result, idea, validationData, offerData }) {
+  const [activeTab, setActiveTab] = useState("overview");
+  const tabs = ["overview", "landing", "gameplan", "legal", "marketing"];
+  const tabLabels = { overview: "Overview", landing: "Landing Page", gameplan: "Game Plan", legal: "Legal Kit", marketing: "Marketing & Leads" };
+
+  return (
+    <div style={styles.dashRoot}>
+      <div style={styles.dashHeader}>
+        <div>
+          <div style={styles.eyebrow}>LAUNCH DASHBOARD</div>
+          <h2 style={{ ...styles.sectionTitle, marginBottom: 4 }}>{idea.slice(0, 60)}{idea.length > 60 ? "…" : ""}</h2>
+          <div style={styles.validScore}>
+            Validation Score: <strong style={{ color: "#00e5a0" }}>{validationData?.score}/100</strong>
+          </div>
+        </div>
+        <div style={styles.dashActions}>
+          <button style={styles.btnOutline} onClick={() => exportPDF(result?.legal, idea)}>⬇ Legal PDF</button>
+        </div>
+      </div>
+
+      <div style={styles.tabBar}>
+        {tabs.map((t) => (
+          <button
+            key={t}
+            style={{ ...styles.tab, ...(activeTab === t ? styles.tabActive : {}) }}
+            onClick={() => setActiveTab(t)}
+          >
+            {tabLabels[t]}
+          </button>
+        ))}
+      </div>
+
+      <div style={styles.dashContent}>
+        {activeTab === "overview" && <OverviewTab validationData={validationData} offerData={offerData} result={result} idea={idea} />}
+        {activeTab === "landing" && <LandingTab html={result?.landingPage} />}
+        {activeTab === "gameplan" && <GameplanTab data={result?.gameplan} />}
+        {activeTab === "legal" && <LegalTab data={result?.legal} />}
+        {activeTab === "marketing" && <MarketingTab data={result?.marketing} />}
+      </div>
+    </div>
+  );
+}
+
+// ── Overview Tab ───────────────────────────────────────────────────────────
+
+function OverviewTab({ validationData, offerData, result, idea }) {
+  const score = validationData?.score || 0;
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun"];
+  const chartData = months.map((m, i) => ({ m, v: Math.round(1000 * Math.pow(1.4, i)) }));
+  const maxV = Math.max(...chartData.map((d) => d.v));
+
+  return (
+    <div style={styles.overviewGrid}>
+      {/* Stats row */}
+      <div style={styles.statsRow}>
+        <StatCard label="Idea Score" value={`${score}/100`} color={score >= 70 ? "#00e5a0" : "#f5a623"} icon="⬡" />
+        <StatCard label="Market Size" value={validationData?.marketSize || "—"} icon="◎" />
+        <StatCard label="Competition" value={validationData?.competition || "—"} icon="⊕" />
+        <StatCard label="Channels" value={result?.marketing?.marketingChannels?.length || 5} icon="⟐" />
+      </div>
+
+      {/* Projected growth chart */}
+      <div style={styles.card}>
+        <div style={styles.cardTitle}>📈 Projected Revenue Growth (6 months)</div>
+        <div style={styles.chartWrap}>
+          {chartData.map((d) => (
+            <div key={d.m} style={styles.chartCol}>
+              <div style={styles.chartBarWrap}>
+                <div style={{ ...styles.chartBar, height: `${(d.v / maxV) * 160}px` }} />
+              </div>
+              <div style={styles.chartLabel}>{d.m}</div>
+              <div style={styles.chartValue}>${(d.v / 1000).toFixed(1)}K</div>
+            </div>
+          ))}
+        </div>
+        <div style={styles.chartNote}>* Based on average trajectory for similar businesses. For illustration purposes.</div>
+      </div>
+
+      {/* Verdict & recommendation */}
+      <div style={{ ...styles.card, gridColumn: "1/-1" }}>
+        <div style={styles.cardTitle}>🎯 AI Recommendation</div>
+        <p style={{ color: "#c5c5e0", lineHeight: 1.7, fontFamily: "'JetBrains Mono', monospace", fontSize: 14 }}>
+          {validationData?.recommendation}
+        </p>
+      </div>
+
+      {/* Strengths vs risks */}
+      <div style={styles.card}>
+        <div style={styles.cardTitle}>💪 Top Strengths</div>
+        {validationData?.strengths?.map((s, i) => (
+          <div key={i} style={styles.listItem}><span style={styles.bullet}>✓</span>{s}</div>
+        ))}
+      </div>
+      <div style={styles.card}>
+        <div style={styles.cardTitle}>⚠ Key Risks</div>
+        {validationData?.risks?.map((r, i) => (
+          <div key={i} style={styles.listItem}><span style={{ ...styles.bullet, color: "#ff4d4d" }}>!</span>{r}</div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Landing Page Tab ───────────────────────────────────────────────────────
+
+function LandingTab({ html }) {
+  const ref = useRef();
+
+  if (!html) return <EmptyState />;
+
+  return (
+    <div style={styles.landingWrap}>
+      <div style={styles.browserBar}>
+        <div style={styles.browserDots}>
+          <div style={{ ...styles.browserDot, background: "#ff5f56" }} />
+          <div style={{ ...styles.browserDot, background: "#ffbd2e" }} />
+          <div style={{ ...styles.browserDot, background: "#27c93f" }} />
+        </div>
+        <div style={styles.browserUrl}>yoursite.com</div>
+        <button
+          style={styles.btnSm}
+          onClick={() => {
+            const b = window.open();
+            b.document.write(html);
+            b.document.close();
+          }}
+        >
+          ⬡ Open Full Page
+        </button>
+      </div>
+      <iframe
+        ref={ref}
+        srcDoc={html}
+        style={styles.landingFrame}
+        title="Landing Page Preview"
+        sandbox="allow-scripts"
+      />
+    </div>
+  );
+}
+
+// ── Gameplan Tab ───────────────────────────────────────────────────────────
+
+function GameplanTab({ data }) {
+  if (!data) return <EmptyState />;
+  const { phases, revenueTarget, firstCustomerStrategy } = data;
+
+  return (
+    <div style={styles.gameplanWrap}>
+      <div style={styles.gameplanMeta}>
+        <div style={styles.metaCard}><div style={styles.metaLabel}>Revenue Target</div><div style={styles.metaValue}>{revenueTarget}</div></div>
+        <div style={styles.metaCard}><div style={styles.metaLabel}>First Customer Strategy</div><div style={styles.metaValue} style2={{ fontSize: 13 }}>{firstCustomerStrategy}</div></div>
+      </div>
+      <div style={styles.phaseList}>
+        {phases?.map((p, i) => (
+          <div key={i} style={styles.phaseCard}>
+            <div style={styles.phaseHeader}>
+              <div style={styles.phaseNum}>{String(i + 1).padStart(2, "0")}</div>
+              <div>
+                <div style={styles.phaseTitle}>{p.phase}</div>
+                <div style={styles.phaseGoal}>{p.goal}</div>
+              </div>
+            </div>
+            <div style={styles.phaseCols}>
+              <div>
+                <div style={styles.phaseSubtitle}>TASKS</div>
+                {p.tasks?.map((t, j) => (
+                  <div key={j} style={styles.phaseItem}><span style={styles.bullet}>→</span>{t}</div>
+                ))}
+              </div>
+              <div>
+                <div style={styles.phaseSubtitle}>KPIs</div>
+                {p.kpis?.map((k, j) => (
+                  <div key={j} style={styles.phaseItem}><span style={{ ...styles.bullet, color: "#00e5a0" }}>◎</span>{k}</div>
+                ))}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Legal Tab ──────────────────────────────────────────────────────────────
+
+function LegalTab({ data }) {
+  if (!data) return <EmptyState />;
+  const { businessStructure, sections, urgentWarnings } = data;
+
+  return (
+    <div style={styles.legalWrap}>
+      <div style={styles.legalHeader}>
+        <div style={styles.legalRecommend}>
+          <div style={styles.legalRecLabel}>RECOMMENDED STRUCTURE</div>
+          <div style={styles.legalRecValue}>{businessStructure?.recommended}</div>
+          <div style={styles.legalRecReason}>{businessStructure?.reason}</div>
+        </div>
+        {urgentWarnings?.length > 0 && (
+          <div style={styles.warningBox}>
+            <div style={styles.warningTitle}>⚠ URGENT ACTIONS</div>
+            {urgentWarnings.map((w, i) => (
+              <div key={i} style={styles.warningItem}>{w}</div>
+            ))}
+          </div>
+        )}
+      </div>
+      <div style={styles.legalGrid}>
+        {sections?.map((s, i) => (
+          <div key={i} style={styles.legalCard}>
+            <div style={styles.legalCardTitle}>{s.title}</div>
+            {s.items?.map((item, j) => (
+              <div key={j} style={styles.legalItem}>
+                <input type="checkbox" style={styles.checkbox} id={`legal-${i}-${j}`} />
+                <label htmlFor={`legal-${i}-${j}`} style={styles.checkLabel}>{item}</label>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Marketing Tab ──────────────────────────────────────────────────────────
+
+function MarketingTab({ data }) {
+  const [tab, setTab] = useState("channels");
+  if (!data) return <EmptyState />;
+  const { targetPersonas, leadSources, marketingChannels, sampleLeads } = data;
+
+  const effortColor = { Low: "#00e5a0", Medium: "#f5a623", High: "#ff4d4d" };
+
+  return (
+    <div>
+      <div style={styles.subTabBar}>
+        {["channels", "leads", "outreach", "personas"].map((t) => (
+          <button key={t} style={{ ...styles.subTab, ...(tab === t ? styles.subTabActive : {}) }} onClick={() => setTab(t)}>
+            {{ channels: "Marketing Channels", leads: "Sample Leads", outreach: "Outreach Templates", personas: "Target Personas" }[t]}
+          </button>
+        ))}
+      </div>
+
+      {tab === "channels" && (
+        <div style={styles.channelList}>
+          {marketingChannels?.map((c, i) => (
+            <div key={i} style={styles.channelCard}>
+              <div style={styles.channelHeader}>
+                <div style={styles.channelName}>{c.channel}</div>
+                <div style={{ ...styles.effortBadge, background: effortColor[c.effort] + "20", color: effortColor[c.effort], borderColor: effortColor[c.effort] }}>
+                  {c.effort} Effort
+                </div>
+              </div>
+              <p style={styles.channelTactic}>{c.tactic}</p>
+              <div style={styles.channelMeta}>
+                <span style={styles.channelMetaItem}>📈 ROI: {c.expectedROI}</span>
+                <span style={styles.channelMetaItem}>⏱ {c.timeToResult}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {tab === "leads" && (
+        <div style={styles.leadsTable}>
+          <div style={styles.tableHeader}>
+            <div style={styles.th}>Company</div>
+            <div style={styles.th}>Contact</div>
+            <div style={styles.th}>Role</div>
+            <div style={styles.th}>Email</div>
+            <div style={styles.th}>LinkedIn</div>
+          </div>
+          {sampleLeads?.map((l, i) => (
+            <div key={i} style={styles.tableRow}>
+              <div style={styles.td}>{l.company}</div>
+              <div style={styles.td}>{l.contact}</div>
+              <div style={{ ...styles.td, color: "#8888aa" }}>{l.role}</div>
+              <div style={{ ...styles.td, fontFamily: "monospace", fontSize: 12 }}>{l.email}</div>
+              <div style={{ ...styles.td, color: "#00e5a0", fontSize: 12 }}>{l.linkedIn}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {tab === "outreach" && (
+        <div style={styles.outreachList}>
+          {leadSources?.map((s, i) => (
+            <div key={i} style={styles.outreachCard}>
+              <div style={styles.outreachPlatform}>{s.platform}</div>
+              <div style={styles.outreachStrategy}>{s.strategy}</div>
+              <div style={styles.outreachTemplate}>{s.template}</div>
+              <button style={styles.copyBtn} onClick={() => navigator.clipboard.writeText(s.template)}>
+                Copy Template
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {tab === "personas" && (
+        <div style={styles.personaGrid}>
+          {targetPersonas?.map((p, i) => (
+            <div key={i} style={styles.personaCard}>
+              <div style={styles.personaAvatar}>{p.name?.charAt(0) || "?"}</div>
+              <div style={styles.personaName}>{p.name}</div>
+              <div style={styles.personaRole}>{p.role}</div>
+              <div style={styles.personaSection}><strong>Pain Point:</strong> {p.pain}</div>
+              <div style={styles.personaSection}><strong>Find them:</strong> {p.where}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Utilities ──────────────────────────────────────────────────────────────
+
+function LoadingPane({ label }) {
+  const [dots, setDots] = useState(".");
+  useEffect(() => {
+    const t = setInterval(() => setDots((d) => (d.length >= 3 ? "." : d + ".")), 400);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <div style={{ ...styles.screen, alignItems: "center", justifyContent: "center" }}>
+      <div style={styles.loadingBox}>
+        <div style={styles.spinner} />
+        <div style={styles.loadingLabel}>{label}{dots}</div>
+      </div>
+    </div>
+  );
+}
+
+function StatCard({ label, value, color, icon }) {
+  return (
+    <div style={styles.statCard}>
+      <div style={styles.statIcon}>{icon}</div>
+      <div style={{ ...styles.statValue, color: color || "#e0e0f0" }}>{value}</div>
+      <div style={styles.statLabel}>{label}</div>
+    </div>
+  );
+}
+
+function Metric({ label, value }) {
+  return (
+    <div style={styles.metricPill}>
+      <div style={styles.metricLabel}>{label}</div>
+      <div style={styles.metricValue}>{value}</div>
+    </div>
+  );
+}
+
+function EmptyState() {
+  return <div style={{ color: "#555", textAlign: "center", padding: 60 }}>Loading data…</div>;
+}
+
+async function exportPDF(legalData, idea) {
+  if (!legalData) return alert("Legal data not available yet.");
+  const content = `
+LEGAL FRAMEWORK FOR: ${idea.toUpperCase()}
+Generated by Tailwind AI
+
+═══════════════════════════════════════════════════
+
+RECOMMENDED BUSINESS STRUCTURE
+${legalData.businessStructure?.recommended}
+${legalData.businessStructure?.reason}
+
+${legalData.sections?.map((s) =>
+  `\n${s.title.toUpperCase()}\n${"─".repeat(40)}\n${s.items?.map((i) => `  □ ${i}`).join("\n")}`
+).join("\n")}
+
+═══════════════════════════════════════════════════
+URGENT ACTIONS
+${legalData.urgentWarnings?.map((w) => `⚠ ${w}`).join("\n")}
+
+═══════════════════════════════════════════════════
+DISCLAIMER: This is AI-generated guidance for informational purposes only.
+Please consult a qualified attorney before making legal decisions.
+  `;
+  const blob = new Blob([content], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "legal-framework.txt";
+  a.click();
+}
+
+// ── Styles ─────────────────────────────────────────────────────────────────
+
+const styles = {
+  root: {
+    minHeight: "100vh",
+    background: "#08080f",
+    color: "#e0e0f0",
+    fontFamily: "'Syne', sans-serif",
+    overflowX: "hidden",
+  },
+  header: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: "18px 40px",
+    borderBottom: "1px solid #1a1a2e",
+    position: "sticky",
+    top: 0,
+    background: "#08080fdd",
+    backdropFilter: "blur(12px)",
+    zIndex: 100,
+  },
+  logo: { display: "flex", alignItems: "center", gap: 8 },
+  logoMark: { fontSize: 22, color: "#00e5a0" },
+  logoText: { fontWeight: 800, fontSize: 16, letterSpacing: "0.15em" },
+  logoSub: { fontSize: 11, color: "#00e5a0", fontFamily: "'JetBrains Mono', monospace", padding: "2px 6px", border: "1px solid #00e5a040", borderRadius: 4 },
+  nav: { display: "flex", gap: 4, alignItems: "center" },
+  navStep: { padding: "4px 12px", fontSize: 11, fontFamily: "'JetBrains Mono', monospace", color: "#444466", letterSpacing: "0.05em", borderRadius: 4 },
+  navStepActive: { color: "#00e5a0", background: "#00e5a015", fontWeight: 600 },
+  navStepFuture: { opacity: 0.4 },
+  main: { minHeight: "calc(100vh - 61px)" },
+  screen: {
+    minHeight: "calc(100vh - 61px)",
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "center",
+    padding: "60px 24px",
+    position: "relative",
+  },
+  screenInner: { maxWidth: 760, width: "100%", zIndex: 1, position: "relative" },
+  eyebrow: { fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#00e5a0", letterSpacing: "0.2em", marginBottom: 12 },
+  heroTitle: { fontFamily: "'Cormorant Garamond', serif", fontSize: 72, fontWeight: 300, lineHeight: 1.05, margin: "0 0 20px", color: "#f0f0ff" },
+  heroEm: { fontStyle: "italic", color: "#00e5a0" },
+  heroSub: { fontSize: 16, color: "#8888aa", lineHeight: 1.7, marginBottom: 36, maxWidth: 560 },
+  sectionTitle: { fontFamily: "'Cormorant Garamond', serif", fontSize: 48, fontWeight: 300, lineHeight: 1.1, margin: "0 0 16px", color: "#f0f0ff" },
+  inputWrap: { position: "relative", marginBottom: 24, border: "1px solid #222240", borderRadius: 8, overflow: "hidden", transition: "border-color 0.2s" },
+  inputWrapFocused: { borderColor: "#00e5a050" },
+  textarea: { width: "100%", background: "#0e0e1a", color: "#e0e0f0", border: "none", outline: "none", padding: "20px 24px", fontSize: 15, fontFamily: "'Syne', sans-serif", resize: "vertical", lineHeight: 1.6, boxSizing: "border-box" },
+  answerBox: { width: "100%", background: "#0e0e1a", color: "#e0e0f0", border: "1px solid #222240", borderRadius: 6, outline: "none", padding: "12px 16px", fontSize: 14, fontFamily: "'Syne', sans-serif", resize: "vertical", lineHeight: 1.6, boxSizing: "border-box", marginTop: 8 },
+  inputBorder: {},
+  examples: { marginBottom: 36, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" },
+  examplesLabel: { fontSize: 12, color: "#555577", fontFamily: "'JetBrains Mono', monospace" },
+  chip: { padding: "6px 14px", background: "#111122", border: "1px solid #222244", borderRadius: 20, color: "#8888aa", fontSize: 12, cursor: "pointer", transition: "all 0.2s" },
+  btn: { display: "inline-flex", alignItems: "center", gap: 8, padding: "16px 36px", background: "#00e5a0", color: "#04140f", fontFamily: "'Syne', sans-serif", fontWeight: 700, fontSize: 15, border: "none", borderRadius: 6, cursor: "pointer", letterSpacing: "0.02em", transition: "all 0.2s" },
+  btnDisabled: { background: "#1a1a2e", color: "#444466", cursor: "not-allowed" },
+  btnArrow: { fontSize: 18 },
+  btnOutline: { display: "inline-flex", alignItems: "center", gap: 6, padding: "10px 20px", background: "transparent", color: "#00e5a0", border: "1px solid #00e5a050", fontFamily: "'Syne', sans-serif", fontWeight: 600, fontSize: 13, borderRadius: 6, cursor: "pointer" },
+  btnSm: { padding: "6px 14px", background: "#111122", color: "#00e5a0", border: "1px solid #00e5a030", borderRadius: 4, fontFamily: "'Syne', sans-serif", fontSize: 12, cursor: "pointer" },
+  decorGrid: { position: "absolute", right: -20, top: 60, display: "grid", gridTemplateColumns: "repeat(8,1fr)", gap: 20, opacity: 0.12, zIndex: 0 },
+  decorDot: { width: 3, height: 3, borderRadius: "50%", background: "#00e5a0" },
+
+  // Validation
+  questionList: { display: "flex", flexDirection: "column", gap: 20, marginBottom: 36 },
+  questionItem: { padding: "20px 24px", background: "#0d0d1a", border: "1px solid #1a1a2e", borderRadius: 8 },
+  questionLabel: { display: "block", fontSize: 15, color: "#c0c0e0", lineHeight: 1.5, marginBottom: 4 },
+  questionNum: { display: "inline-block", fontFamily: "'JetBrains Mono', monospace", color: "#00e5a0", fontSize: 12, marginRight: 12 },
+  scoreWrap: { display: "flex", gap: 32, alignItems: "center", marginBottom: 28, padding: "28px", background: "#0d0d1a", border: "1px solid #1a1a2e", borderRadius: 12 },
+  scoreCircle: { position: "relative", width: 120, height: 120, flexShrink: 0 },
+  scoreSvg: { width: 120, height: 120 },
+  scoreNum: { position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -56%)", fontSize: 32, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace" },
+  scoreLabel: { position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, 40%)", fontSize: 12, color: "#555577", fontFamily: "'JetBrains Mono', monospace" },
+  scoreVerdict: {},
+  verdictBadge: { display: "inline-block", padding: "4px 12px", border: "1px solid", borderRadius: 4, fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.1em", marginBottom: 12 },
+  verdictText: { fontSize: 15, color: "#c0c0e0", lineHeight: 1.6, margin: 0 },
+  metricsRow: { display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" },
+  metricPill: { flex: 1, minWidth: 140, padding: "16px", background: "#0d0d1a", border: "1px solid #1a1a2e", borderRadius: 8 },
+  metricLabel: { fontSize: 10, fontFamily: "'JetBrains Mono', monospace", color: "#555577", letterSpacing: "0.1em", marginBottom: 4 },
+  metricValue: { fontSize: 14, color: "#c0c0e0" },
+  twoCol: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 },
+  colCard: { padding: "20px 24px", background: "#0d0d1a", border: "1px solid #00e5a020", borderRadius: 8 },
+  colCardTitle: { fontSize: 13, fontWeight: 700, marginBottom: 12, color: "#00e5a0" },
+  listItem: { display: "flex", gap: 10, fontSize: 13, color: "#c0c0e0", marginBottom: 8, lineHeight: 1.5 },
+  bullet: { color: "#00e5a0", flexShrink: 0, fontWeight: 700 },
+  recBox: { padding: "20px 24px", background: "#0a1a12", border: "1px solid #00e5a030", borderRadius: 8, marginBottom: 28 },
+  recLabel: { fontSize: 10, fontFamily: "'JetBrains Mono', monospace", color: "#00e5a0", letterSpacing: "0.15em", marginBottom: 8 },
+  recText: { fontSize: 14, color: "#b0e8c8", lineHeight: 1.7, margin: 0 },
+
+  // Offer
+  optionGrid: { display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 },
+  optionBtn: { padding: "8px 16px", background: "#111122", border: "1px solid #222244", borderRadius: 6, color: "#8888aa", fontSize: 13, cursor: "pointer" },
+  optionBtnSelected: { background: "#00e5a020", border: "1px solid #00e5a0", color: "#00e5a0" },
+
+  // Generating
+  logBox: { background: "#0a0a14", border: "1px solid #1a1a2e", borderRadius: 8, padding: "20px 24px", marginBottom: 20, minHeight: 200, textAlign: "left" },
+  logLine: { display: "flex", gap: 12, alignItems: "center", padding: "8px 0", fontFamily: "'JetBrains Mono', monospace", fontSize: 13, color: "#555577", borderBottom: "1px solid #111122" },
+  logLineDone: { color: "#00e5a0" },
+  logLinePending: { color: "#f5a623" },
+  logDot: { fontSize: 14, width: 20, textAlign: "center" },
+  progressBar: { width: "100%", height: 3, background: "#1a1a2e", borderRadius: 2, overflow: "hidden" },
+  progressFill: { height: "100%", background: "linear-gradient(90deg, #00e5a0, #00bbff)", borderRadius: 2, transition: "width 0.5s ease" },
+
+  // Loading
+  loadingBox: { textAlign: "center", padding: 60 },
+  spinner: { width: 40, height: 40, border: "2px solid #1a1a2e", borderTop: "2px solid #00e5a0", borderRadius: "50%", animation: "spin 1s linear infinite", margin: "0 auto 20px" },
+  loadingLabel: { fontFamily: "'JetBrains Mono', monospace", fontSize: 14, color: "#8888aa" },
+
+  // Dashboard
+  dashRoot: { padding: "32px 40px", minHeight: "calc(100vh - 61px)" },
+  dashHeader: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 },
+  dashActions: { display: "flex", gap: 10 },
+  validScore: { fontSize: 13, color: "#8888aa", fontFamily: "'JetBrains Mono', monospace" },
+  tabBar: { display: "flex", gap: 2, marginBottom: 28, borderBottom: "1px solid #1a1a2e", paddingBottom: 0 },
+  tab: { padding: "10px 20px", background: "transparent", border: "none", borderBottom: "2px solid transparent", color: "#555577", fontFamily: "'Syne', sans-serif", fontSize: 13, cursor: "pointer", letterSpacing: "0.02em", marginBottom: -1 },
+  tabActive: { color: "#00e5a0", borderBottom: "2px solid #00e5a0" },
+  dashContent: { paddingTop: 8 },
+
+  // Overview
+  overviewGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 },
+  statsRow: { gridColumn: "1/-1", display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 },
+  statCard: { padding: "20px 24px", background: "#0d0d1a", border: "1px solid #1a1a2e", borderRadius: 8, textAlign: "center" },
+  statIcon: { fontSize: 20, marginBottom: 8, color: "#334" },
+  statValue: { fontSize: 22, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", marginBottom: 4 },
+  statLabel: { fontSize: 11, color: "#555577", letterSpacing: "0.1em" },
+  card: { padding: "24px", background: "#0d0d1a", border: "1px solid #1a1a2e", borderRadius: 8 },
+  cardTitle: { fontSize: 13, fontWeight: 700, marginBottom: 16, color: "#e0e0f0", letterSpacing: "0.02em" },
+
+  // Chart
+  chartWrap: { display: "flex", gap: 8, alignItems: "flex-end", height: 180, marginTop: 8, padding: "0 8px" },
+  chartCol: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center" },
+  chartBarWrap: { width: "100%", display: "flex", alignItems: "flex-end", justifyContent: "center", height: 160 },
+  chartBar: { width: "60%", background: "linear-gradient(180deg, #00e5a0, #00bbff30)", borderRadius: "4px 4px 0 0", transition: "height 0.8s ease", minHeight: 4 },
+  chartLabel: { fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#555577", marginTop: 4 },
+  chartValue: { fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#00e5a090" },
+  chartNote: { fontSize: 11, color: "#333355", marginTop: 8, fontStyle: "italic" },
+
+  // Landing
+  landingWrap: { border: "1px solid #1a1a2e", borderRadius: 8, overflow: "hidden" },
+  browserBar: { display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", background: "#0d0d1a", borderBottom: "1px solid #1a1a2e" },
+  browserDots: { display: "flex", gap: 6 },
+  browserDot: { width: 10, height: 10, borderRadius: "50%" },
+  browserUrl: { flex: 1, textAlign: "center", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: "#555577" },
+  landingFrame: { width: "100%", height: "70vh", border: "none", background: "#fff" },
+
+  // Gameplan
+  gameplanWrap: {},
+  gameplanMeta: { display: "grid", gridTemplateColumns: "1fr 2fr", gap: 16, marginBottom: 24 },
+  metaCard: { padding: "20px 24px", background: "#0d0d1a", border: "1px solid #1a1a2e", borderRadius: 8 },
+  metaLabel: { fontSize: 10, fontFamily: "'JetBrains Mono', monospace", color: "#555577", letterSpacing: "0.1em", marginBottom: 6 },
+  metaValue: { fontSize: 15, color: "#e0e0f0", lineHeight: 1.5 },
+  phaseList: { display: "flex", flexDirection: "column", gap: 16 },
+  phaseCard: { padding: "24px", background: "#0d0d1a", border: "1px solid #1a1a2e", borderRadius: 8 },
+  phaseHeader: { display: "flex", gap: 16, alignItems: "flex-start", marginBottom: 20 },
+  phaseNum: { fontFamily: "'JetBrains Mono', monospace", fontSize: 28, fontWeight: 600, color: "#00e5a020", lineHeight: 1 },
+  phaseTitle: { fontSize: 16, fontWeight: 700, color: "#e0e0f0", marginBottom: 4 },
+  phaseGoal: { fontSize: 13, color: "#8888aa" },
+  phaseCols: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 },
+  phaseSubtitle: { fontSize: 10, fontFamily: "'JetBrains Mono', monospace", color: "#555577", letterSpacing: "0.12em", marginBottom: 10 },
+  phaseItem: { display: "flex", gap: 8, fontSize: 13, color: "#c0c0e0", marginBottom: 8, lineHeight: 1.5 },
+
+  // Legal
+  legalWrap: {},
+  legalHeader: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 },
+  legalRecommend: { padding: "24px", background: "#0a1a12", border: "1px solid #00e5a030", borderRadius: 8 },
+  legalRecLabel: { fontSize: 10, fontFamily: "'JetBrains Mono', monospace", color: "#00e5a0", letterSpacing: "0.15em", marginBottom: 8 },
+  legalRecValue: { fontSize: 20, fontFamily: "'Cormorant Garamond', serif", color: "#e0e0f0", marginBottom: 8 },
+  legalRecReason: { fontSize: 13, color: "#8888aa", lineHeight: 1.6 },
+  warningBox: { padding: "24px", background: "#1a0a0a", border: "1px solid #ff4d4d30", borderRadius: 8 },
+  warningTitle: { fontSize: 12, color: "#ff4d4d", marginBottom: 12, fontFamily: "'JetBrains Mono', monospace" },
+  warningItem: { fontSize: 13, color: "#ffaaaa", marginBottom: 8, lineHeight: 1.5, paddingLeft: 16, borderLeft: "2px solid #ff4d4d40" },
+  legalGrid: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 },
+  legalCard: { padding: "20px", background: "#0d0d1a", border: "1px solid #1a1a2e", borderRadius: 8 },
+  legalCardTitle: { fontSize: 13, fontWeight: 700, color: "#e0e0f0", marginBottom: 14, paddingBottom: 10, borderBottom: "1px solid #1a1a2e" },
+  legalItem: { display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 10 },
+  checkbox: { marginTop: 2, accentColor: "#00e5a0", cursor: "pointer" },
+  checkLabel: { fontSize: 12, color: "#c0c0e0", lineHeight: 1.5, cursor: "pointer" },
+
+  // Marketing
+  subTabBar: { display: "flex", gap: 8, marginBottom: 24, flexWrap: "wrap" },
+  subTab: { padding: "8px 16px", background: "#0d0d1a", border: "1px solid #1a1a2e", borderRadius: 4, color: "#555577", fontFamily: "'Syne', sans-serif", fontSize: 12, cursor: "pointer" },
+  subTabActive: { background: "#00e5a015", border: "1px solid #00e5a040", color: "#00e5a0" },
+  channelList: { display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 16 },
+  channelCard: { padding: "20px 24px", background: "#0d0d1a", border: "1px solid #1a1a2e", borderRadius: 8 },
+  channelHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
+  channelName: { fontSize: 15, fontWeight: 700, color: "#e0e0f0" },
+  effortBadge: { fontSize: 11, padding: "2px 10px", border: "1px solid", borderRadius: 4, fontFamily: "'JetBrains Mono', monospace" },
+  channelTactic: { fontSize: 13, color: "#8888aa", lineHeight: 1.6, marginBottom: 12, margin: "0 0 12px" },
+  channelMeta: { display: "flex", gap: 16 },
+  channelMetaItem: { fontSize: 11, color: "#555577", fontFamily: "'JetBrains Mono', monospace" },
+  leadsTable: { background: "#0d0d1a", border: "1px solid #1a1a2e", borderRadius: 8, overflow: "hidden" },
+  tableHeader: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1.5fr 1.5fr", background: "#111122", padding: "12px 20px", borderBottom: "1px solid #1a1a2e" },
+  tableRow: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1.5fr 1.5fr", padding: "14px 20px", borderBottom: "1px solid #0f0f1a" },
+  th: { fontSize: 10, fontFamily: "'JetBrains Mono', monospace", color: "#555577", letterSpacing: "0.1em" },
+  td: { fontSize: 13, color: "#c0c0e0" },
+  outreachList: { display: "flex", flexDirection: "column", gap: 16 },
+  outreachCard: { padding: "24px", background: "#0d0d1a", border: "1px solid #1a1a2e", borderRadius: 8 },
+  outreachPlatform: { fontSize: 14, fontWeight: 700, color: "#00e5a0", marginBottom: 6, fontFamily: "'JetBrains Mono', monospace" },
+  outreachStrategy: { fontSize: 13, color: "#8888aa", marginBottom: 16, lineHeight: 1.6 },
+  outreachTemplate: { fontSize: 13, color: "#c0c0e0", background: "#08080f", padding: "16px", borderRadius: 6, lineHeight: 1.7, whiteSpace: "pre-wrap", fontFamily: "'JetBrains Mono', monospace", marginBottom: 12 },
+  copyBtn: { padding: "8px 16px", background: "transparent", border: "1px solid #00e5a040", color: "#00e5a0", borderRadius: 4, fontFamily: "'Syne', sans-serif", fontSize: 12, cursor: "pointer" },
+  personaGrid: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 },
+  personaCard: { padding: "24px", background: "#0d0d1a", border: "1px solid #1a1a2e", borderRadius: 8, textAlign: "center" },
+  personaAvatar: { width: 52, height: 52, borderRadius: "50%", background: "linear-gradient(135deg,#00e5a030,#00bbff30)", border: "1px solid #00e5a040", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, margin: "0 auto 12px", color: "#00e5a0", fontFamily: "'Cormorant Garamond', serif" },
+  personaName: { fontSize: 16, fontWeight: 700, color: "#e0e0f0", marginBottom: 4 },
+  personaRole: { fontSize: 12, color: "#555577", marginBottom: 16, fontFamily: "'JetBrains Mono', monospace" },
+  personaSection: { fontSize: 12, color: "#8888aa", textAlign: "left", marginBottom: 8, lineHeight: 1.5 },
+};
+
+const globalCSS = `
+  @keyframes spin { to { transform: rotate(360deg); } }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 0; background: #08080f; }
+  textarea::placeholder { color: #333355; }
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: #0a0a14; }
+  ::-webkit-scrollbar-thumb { background: #222244; border-radius: 3px; }
+  button:hover:not(:disabled) { opacity: 0.88; transform: translateY(-1px); }
+  button { transition: all 0.2s; }
+`;
